@@ -3,6 +3,7 @@ using Flux: mse
 
 H = 145.
 z = collect(0:0.1:H)'
+Δz = 1.2
 
 #=
 ##################################
@@ -162,11 +163,17 @@ function temperature_gradient(T, z)
     return dTdz
 end
 
-N_train = size(smooth_T_down_z, 2)
-Tdz = smooth_T_down_z
-Tuz = smooth_T_up_z
-dTdz = hcat([temperature_gradient(smooth_T_down_z[:, k], z_down) for k in 1:N_train]...)
-dTuz = hcat([temperature_gradient(smooth_T_up_z[:, k], z_up) for k in 1:N_train]...)
+#N_train = size(smooth_T_down_z, 2)
+#Tdz = smooth_T_down_z
+#Tuz = smooth_T_up_z
+#Q_train = smooth_Q_train
+N_train = size(T_down_z, 2)
+Tdz = T_down_z
+Tuz = T_up_z
+Q_train = Q_data
+
+dTdz = hcat([temperature_gradient(Tdz[:, k], z_down) for k in 1:N_train]...)
+dTuz = hcat([temperature_gradient(Tuz[:, k], z_up) for k in 1:N_train]...)
 
 T_train = zeros(2, length(z_down), N_train)
 dT_train = zeros(2, length(z_down), N_train)
@@ -176,26 +183,79 @@ for i in 1:N_train
     dT_train[:, :, i] .= hcat(dTdz[:, i], vcat(dTuz[:, i], dTdz[end, i]))' 
 end
 
-function loss_eq(Tb, A, T, dT)
+#=
+function loss_eq(Tb, A, T, dT, Q)
+    λ1 = 1.
+    λ2 = 0.01
     loss = 0.
+    eq_1_res = 0.
+    Q_calc = zeros(Float64, 2)
     for i in 1:size(T, 2)
         @views dT_i = dT[:, i]
         @views T_i = T[:, i]
         @views A_i = A[:, :, i]
         @views Tb_i = Tb[i]
-        loss += Flux.mse(dT_i, A_i*T_i - A_i*ones(2) .* Tb[i]) 
+        eq_1_res += Flux.mse(dT_i, A_i*T_i - A_i*ones(2) .* Tb_i) 
+
+        # q = R^-1 Tf(z) - R^-1 * 1  Tb(z)
+        Rinv_i = (mf*cp) .* [-1 0; 0 1] * A_i
+        Q_calc += Δz * (Rinv_i * T_i - Rinv_i * ones(2) * Tb_i)
     end
+    loss += λ1 * eq_1_res
+    #loss += λ2 * Flux.mse(Q, Q_calc[1] - Q_calc[2])
     return loss
 end
+=#
 
-m_hidden = 100
+barrier_term(x) = relu(-x)^2
+penalty_term(f) = min(f, 0.)^2
+augemented_loss(f, λ = 1., ρ = 1.) = λ * f + ρ * min(f, 0.)^2
+
+function loss_eq(Tb, A, T, dT, Q, μ)
+    NB = size(T, 2)
+    λ1 = 1.
+    λ2 = 1e-6
+    λ3 = 1e-1
+    λ4 = 1e-2
+    λ5 = 1e-2
+    λ6 = 1e-5
+
+    dT_residual = 0.
+    dT_norm = 0.
+    Q_calc = 0.
+    for i in 1:NB
+        @views dT_i = dT[:, i]
+        @views T_i = T[:, i]
+        @views A_i = A[:, :, i]
+        @views Tb_i = Tb[i]
+        dT_residual += Flux.mse(dT_i, A_i * (T_i - Tb_i .* ones(2)))
+        dT_norm += sum(abs2.(A_i * (T_i - Tb_i .* ones(2))))
+        Rinv_i = (mf * cp) .* [-1 0; 0 1] * A_i
+
+        Q_calc_point_i = Rinv_i * (T_i - Tb_i .* ones(2))
+        Q_calc += (Q_calc_point_i[1] - Q_calc_point_i[2]) * Δz * (i == 1 || i == NB ? 0.5 : 1.0) # Trapezoidal quadrature rule
+    end
+    Q_residual = Flux.mse(Q, Q_calc)
+
+    #Tb_high = μ * barrier_term(sum(Tb .- max.(T[1,:], T[2,:])))
+    Tb_high = penalty_term(sum(Tb .- T[1, :])) + penalty_term(sum(Tb .- T[2, :]))
+
+    A_stability = penalty_term(-sum(A[1, 1, :] .+ A[1, 2, :])) + penalty_term(sum(A[2, 1, :] .+ A[2, 2, :]))
+    #A_stability = μ * barrier_term(-sum(A[1, 1, :] .+ A[1, 2, :])) + μ * barrier_term(sum(A[2, 1, :] .+ A[2, 2, :]))
+
+    A_big = sum([sum(1 ./ abs.(A[:, :, k])) for k in 1:NB])
+
+    #@show dT_residual, Q_residual, dT_norm, Tb_high, A_stability, A_big
+    return λ1 * dT_residual + λ2 * Q_residual + λ3 * dT_norm + λ4 * Tb_high + λ5 * A_stability + λ6 * A_big
+end
+
+m_hidden = 20
 model = Chain(
     Dense(1+2 => m_hidden, tanh),
     Dense(m_hidden => m_hidden, tanh),
     Dense(m_hidden => 1+4),
     x -> vcat(x[1:1, :], sigmoid.(x[2:5, :]) .* [-1, 1, -1, 1])
 ) 
-
 opt_state_eq = Flux.setup( 
     Flux.OptimiserChain(
         WeightDecay(), 
@@ -205,17 +265,18 @@ opt_state_eq = Flux.setup(
 )
 
 loss_train_eq = zeros(0)
-@time for epoch in 1:200
+@time for epoch in 1:20
     @show epoch
     for i in 1:N_train
         @views T_data = T_train[:, :, i]
         @views dT_data = dT_train[:, :, i]
+        Q_data_samp = Q_train[i]
 
         lossval, grads = Flux.withgradient(model) do m
             res = m(vcat(z_down', T_data))
             @views Tb = res[1, :]
             @views A = reshape(res[2:end, :], 2, 2, size(res, 2))
-            loss_eq(Tb, A, T_data, dT_data)
+            loss_eq(Tb, A, T_data, dT_data, Q_data_samp, μ)
         end
         Flux.update!(opt_state_eq, model, grads[1])
         push!(loss_train_eq, lossval)
@@ -237,9 +298,22 @@ prediction = model(test_input)
 @views A_pred = reshape(prediction[2:end, :], 2, 2, size(prediction, 2))
 
 fig = Figure()
-ax = Axis(fig[1, 1])
-lines!(ax, Tdz, -z_down, label="Td")
-lines!(ax, Tuz, -z_down, label="Tu")
-lines!(ax, Tb_pred, -z_down, label="Tb pred")
+ax = Axis(fig[1, 1], title="Physics-informed internal model", xlabel=L"T  \ [^\circ C]", ylabel=L"z \ [m]")
+lines!(ax, Tdz, -z_down, label=L"T_\text{down}")
+lines!(ax, Tuz, -z_down, label=L"T_\text{up}")
+lines!(ax, Tb_pred, -z_down, label=L"T_\text{b} \text{ predidcted}")
 axislegend(""; position= :lb)
 fig
+
+# save("$(@__DIR__)/pinn_internal_model.png", fig)
+
+### Check residuals
+sum([abs.(dT_train[:, l, k] .- A_pred[:,:,k] * (T_train[:,l,k] - ones(2) .* Tb_pred[l])) for l in 1:length(z_down)])
+
+Q_pred = 0.
+for i in 1:120
+    Rinv_pred = mf * cp .* [-1 0; 0 1] * A_pred[:,:,i]
+    Q_pred_i = Rinv_pred * (T_train[:,i,k] - ones(2) .* Tb_pred[i])
+    Q_pred += (Q_pred_i[1] - Q_pred_i[2]) * Δz * (i == 1 || i == N_train ? 0.5 : 1.0) # Trapezoidal quadrature rule
+end
+Q_pred - Q_train[1]
