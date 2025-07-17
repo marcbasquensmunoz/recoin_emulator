@@ -1,5 +1,5 @@
 
-function normalize_min(x, m=nothing, M=nothing)
+function normalise_min(x, m=nothing, M=nothing)
     if (isnothing(M)) M = vec(maximum(x, dims=2)) end
     if (isnothing(m)) m = vec(minimum(x, dims=2)) end
 
@@ -8,9 +8,10 @@ function normalize_min(x, m=nothing, M=nothing)
     return norm, m, M
 end
 
-denormalise_data(data, m, M) = hcat([@. data[:, i] .* (M - m) .+ m for i in 1:size(data, 2)]...)
+denormalise_min(data, m, M) = hcat([@. data[:, i] .* (M - m) .+ m for i in 1:size(data, 2)]...)
 
 function prepare_data(data, Nt_train, prediction_steps)
+
     Nt = size(data, 2)    # Length of each time series
     N = size(data, 3)     # Number of time series
     N_train = N*(Nt-Nt_train-prediction_steps) 
@@ -33,12 +34,12 @@ function prepare_data(data, Nt_train, prediction_steps)
             @views window_data = data[:, window, j]
 
             # Normalize the train data
-            @views normalized_data, mins, maxs = normalize_min(window_data[:, train_subwindow])
+            @views normalized_data, mins, maxs = normalise_min(window_data[:, train_subwindow])
 
             # Normalize the control and target data using the same normalization as the train data 
             # (at prediction time we don't have information about the future values)
-            @views normalized_target, _, _ = normalize_min(window_data[1:3, prediction_subwindow], mins[1:3], maxs[1:3])
-            @views normalized_control, _, _ = normalize_min(window_data[4:4, prediction_subwindow], mins[4:4], maxs[4:4])
+            @views normalized_target, _, _ = normalise_min(window_data[1:3, prediction_subwindow], mins[1:3], maxs[1:3])
+            @views normalized_control, _, _ = normalise_min(window_data[4:4, prediction_subwindow], mins[4:4], maxs[4:4])
 
             # Input
             @views @. X_state[:, :, i] = normalized_data
@@ -52,8 +53,8 @@ function prepare_data(data, Nt_train, prediction_steps)
         end
     end
 
-    train_range = 1:Int(0.8*N_train)
-    test_range = Int(0.8*N_train):N_train
+    train_range = 1:Int(ceil(0.8*N_train))
+    test_range = Int(ceil(0.8*N_train)):N_train
 
     # Data loaders declaration
     batchsize = 512

@@ -2,7 +2,7 @@ using BoreholeNetworksSimulator
 using Distributions
 
 Δt = 60 * 20.
-Nt = 24*30*3   # Number of time steps
+Nt = 24*30   # Number of time steps
 N = 500      # Number of samples
 
 α = 1e-6

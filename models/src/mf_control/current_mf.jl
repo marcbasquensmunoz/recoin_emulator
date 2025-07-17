@@ -2,7 +2,7 @@ using Flux
 using Flux: normalise
 using Makie
 using CairoMakie
-include("../generate_simulated_data_random_mf.jl")
+include("../../../data/src/synthetic/generate_simulated_data.jl")
 
 model_save_file = "$(@__DIR__)/current_mf.jld2"
 model_loss_save_file = "$(@__DIR__)/current_mf_loss.jld2"
@@ -14,10 +14,13 @@ N_train = N*(Nt-Nt_train)  # Number of training samples
 train_range = 1:Int(0.8*N_train)
 test_range = Int(0.8*N_train):N_train
 
-X_l = zeros(Float32, 3, Nt_train, N_train) # Input LSTM
+X_l = zeros(Float32, 4, Nt_train, N_train) # Input LSTM
 X_m = zeros(Float32, 1, N_train)           # Input mf
 Y = zeros(Float32, 3, N_train)             # Output
 
+
+
+#=
 # Rolling window sampling
 i = 1
 for j in 1:N
@@ -34,7 +37,7 @@ for j in 1:N
         Y[3, i] = Float32(norm_Q[end])
         i += 1
     end
-end
+end=#
 
 # Data loaders declaration
 batchsize = 512
